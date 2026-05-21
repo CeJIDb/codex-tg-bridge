@@ -38,4 +38,5 @@ export const config = {
   codexModel: process.env.CODEX_MODEL || null,
   codexEffort: process.env.CODEX_EFFORT || "medium",
   codexTimeoutMs: Number(process.env.CODEX_TIMEOUT_MS ?? 300000),
+  codexDebugDir: process.env.CODEX_DEBUG_DIR || null,
 };

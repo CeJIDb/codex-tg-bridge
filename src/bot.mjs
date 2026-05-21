@@ -3,6 +3,7 @@ import PQueue from "p-queue";
 import { config } from "./config.mjs";
 import { askCodex } from "./codex.mjs";
 import { triage } from "./triage.mjs";
+import { mdToTgHtml, chunkByLines } from "./format.mjs";
 
 const TELEGRAM_LIMIT = 4000;
 const queue = new PQueue({ concurrency: 1 });
@@ -29,8 +30,11 @@ export function createBot() {
     const prompt = ctx.message.text.trim();
     if (!prompt || prompt.startsWith("/")) return;
 
+    const who = ctx.from?.username ? `@${ctx.from.username}` : `id=${ctx.from?.id}`;
+
     const canned = triage(prompt);
     if (canned) {
+      logTurn({ who, prompt, answer: canned, source: "triage" });
       await ctx.reply(canned);
       return;
     }
@@ -42,10 +46,11 @@ export function createBot() {
     }
 
     try {
-      const answer = await queue.add(() => askCodex(prompt));
-      await sendAnswer(ctx, placeholder, answer);
+      const result = await queue.add(() => askCodex(prompt));
+      logTurn({ who, prompt, ...result, source: "codex" });
+      await sendAnswer(ctx, placeholder, result.answer);
     } catch (err) {
-      console.error("Codex error:", err);
+      logError({ who, prompt, err });
       const msg = err.timedOut
         ? `Таймаут (${config.codexTimeoutMs} мс). Попробуй переформулировать короче.`
         : `Ошибка: ${err.shortMessage || err.message || "unknown"}`;
@@ -58,29 +63,105 @@ export function createBot() {
 }
 
 async function sendAnswer(ctx, placeholder, text) {
-  const chunks = chunk(text, TELEGRAM_LIMIT);
-  await safeEdit(ctx, placeholder, chunks[0]);
+  const html = mdToTgHtml(text);
+  const chunks = chunkByLines(html, TELEGRAM_LIMIT);
+  await safeEdit(ctx, placeholder, chunks[0], text);
   for (let i = 1; i < chunks.length; i++) {
-    await ctx.reply(chunks[i]);
+    await safeReply(ctx, chunks[i]);
   }
 }
 
-async function safeEdit(ctx, placeholder, text) {
+// Сначала пытаемся отредактировать с HTML. Если Telegram отверг разметку
+// (некорректные теги в выводе Codex) — fallback в plain text с исходным markdown.
+async function safeEdit(ctx, placeholder, html, fallbackText) {
+  const chatId = placeholder.chat.id;
+  const msgId = placeholder.message_id;
   try {
-    await ctx.api.editMessageText(placeholder.chat.id, placeholder.message_id, text);
+    await ctx.api.editMessageText(chatId, msgId, html, { parse_mode: "HTML" });
+    return;
   } catch (err) {
+    if (isParseError(err)) {
+      console.warn("HTML parse rejected, шлю plain:", err.description || err.message);
+      try {
+        await ctx.api.editMessageText(chatId, msgId, fallbackText ?? stripTags(html));
+        return;
+      } catch (err2) {
+        await ctx.reply(fallbackText ?? stripTags(html));
+        return;
+      }
+    }
     console.warn(
       "editMessageText не удалось, шлю отдельным сообщением:",
       err.description || err.message,
     );
-    await ctx.reply(text);
+    await safeReply(ctx, html, fallbackText);
   }
 }
 
-function chunk(text, size) {
-  const out = [];
-  for (let i = 0; i < text.length; i += size) {
-    out.push(text.slice(i, i + size));
+async function safeReply(ctx, html, fallbackText) {
+  try {
+    await ctx.reply(html, { parse_mode: "HTML" });
+  } catch (err) {
+    if (isParseError(err)) {
+      console.warn("HTML parse rejected, шлю plain:", err.description || err.message);
+      await ctx.reply(fallbackText ?? stripTags(html));
+      return;
+    }
+    throw err;
   }
-  return out;
+}
+
+function isParseError(err) {
+  const desc = err?.description || err?.message || "";
+  return /can't parse|parse entities|unsupported start tag/i.test(desc);
+}
+
+function stripTags(html) {
+  return html
+    .replace(/<\/?[a-z][^>]*>/gi, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
+}
+
+function logTurn({ who, prompt, answer, model, effort, elapsedMs, tokens, source }) {
+  const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const head =
+    source === "triage"
+      ? "triage"
+      : `${model ?? "default"} · effort=${effort ?? "—"}` +
+        (elapsedMs != null ? ` · ${formatMs(elapsedMs)}` : "") +
+        ` · ${formatTokens(tokens)}`;
+  console.log(`\n[${ts}] ${who} — ${head}`);
+  console.log(`  Q: ${oneLine(prompt)}`);
+  console.log(`  A: ${oneLine(answer)}`);
+}
+
+function logError({ who, prompt, err }) {
+  const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
+  console.error(`\n[${ts}] ${who} — codex ERROR`);
+  console.error(`  Q: ${oneLine(prompt)}`);
+  console.error(`  ! ${err.shortMessage || err.message || "unknown"}`);
+  if (err.codexStderr) console.error(err.codexStderr);
+}
+
+function oneLine(s, max = 200) {
+  const flat = String(s ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
+}
+
+function formatMs(ms) {
+  if (ms < 1000) return `${ms}мс`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}с`;
+  const m = Math.floor(s / 60);
+  return `${m}м ${Math.round(s - m * 60)}с`;
+}
+
+function formatTokens(t) {
+  if (!t) return "tokens=n/a";
+  return `tokens=${t.total}`;
 }
