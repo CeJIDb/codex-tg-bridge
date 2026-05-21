@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(npm run ci:check)",
+      "Bash(npm run lint:md)",
+      "Bash(npm run lint:md:fix)",
+      "Bash(npm run lint:file-names)",
+      "Bash(npm run lint:md-links)",
+      "Bash(npm run format)",
+      "Bash(npm run format:check)",
+      "Bash(npm run test:triage)",
+      "Bash(npm view *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(rm -r /*)",
+      "Bash(find * -delete)",
+      "Bash(find * -exec rm *)",
+      "Bash(export *curl*)",
+      "Bash(curl*$*)",
+      "Bash(curl*${*}*)",
+      "Bash(wget*$*)",
+      "Bash(wget*${*}*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(git push --force-with-lease*)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean -f*)",
+      "Bash(git branch -D *)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/secrets*)",
+      "Read(**/credentials*)",
+      "Read(**/*secret*)",
+      "Read(**/*password*)",
+      "Read(**/*passwd*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/*.p12)",
+      "Read(**/*.pfx)",
+      "Read(**/*.sqlite)",
+      "Read(**/*.sqlite3)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node $CLAUDE_PROJECT_DIR/scripts/claude-hooks/block-secret-write.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node $CLAUDE_PROJECT_DIR/scripts/claude-hooks/block-unsafe-git-add.mjs"
+          },
+          {
+            "type": "command",
+            "command": "node $CLAUDE_PROJECT_DIR/scripts/claude-hooks/block-push-to-main.mjs"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node $CLAUDE_PROJECT_DIR/scripts/claude-hooks/format-on-write.mjs",
+            "statusMessage": "Форматирование..."
+          }
+        ]
+      }
+    ]
+  }
+}
