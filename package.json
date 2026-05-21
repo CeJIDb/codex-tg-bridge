@@ -8,6 +8,7 @@
     "start": "node src/index.mjs",
     "dev": "node --watch src/index.mjs",
     "test:triage": "node test/triage.test.mjs",
+    "test:format": "node test/format.test.mjs",
     "format": "node ./scripts/lint/format-changed.mjs",
     "format:check": "node ./scripts/lint/format-changed.mjs --check",
     "format:all": "prettier --write \"**/*.{md,json,jsonc,yml,yaml,js,mjs,cjs}\"",
