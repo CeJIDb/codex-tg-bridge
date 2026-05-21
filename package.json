@@ -1,0 +1,50 @@
+{
+  "name": "codex-tg-bridge",
+  "version": "0.1.0",
+  "description": "Telegram-бот «Лоцман» — мост между Telegram и Codex CLI поверх графа нормативной базы",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev": "node --watch src/index.mjs",
+    "test:triage": "node test/triage.test.mjs",
+    "format": "node ./scripts/lint/format-changed.mjs",
+    "format:check": "node ./scripts/lint/format-changed.mjs --check",
+    "format:all": "prettier --write \"**/*.{md,json,jsonc,yml,yaml,js,mjs,cjs}\"",
+    "format:all:check": "prettier --check \"**/*.{md,json,jsonc,yml,yaml,js,mjs,cjs}\"",
+    "lint:md": "node ./scripts/lint/markdownlint-changed.mjs",
+    "lint:md:all": "markdownlint-cli2 \"**/*.md\"",
+    "lint:md:fix": "markdownlint-cli2 --fix \"**/*.md\"",
+    "lint:md:custom": "node ./scripts/lint/check-markdown.mjs",
+    "lint:md-links": "node ./scripts/lint/check-markdown-links.mjs",
+    "lint:file-names": "node ./scripts/lint/check-file-names.mjs",
+    "check:branch": "node ./scripts/git/check-branch-name.mjs",
+    "commitlint": "commitlint --from HEAD~1 --to HEAD",
+    "prepare": "husky",
+    "ci:check": "node ./scripts/lint/format-changed.mjs --check && node ./scripts/lint/markdownlint-changed.mjs && node ./scripts/lint/check-markdown.mjs --changed-only && node ./scripts/lint/check-file-names.mjs --changed-only && node ./scripts/lint/check-markdown-links.mjs",
+    "ci:check:all": "npm run format:all:check && npm run lint:md:all && node ./scripts/lint/check-markdown.mjs && node ./scripts/lint/check-markdown-links.mjs && node ./scripts/lint/check-file-names.mjs",
+    "commit": "node ./scripts/lint/format-changed.mjs && npm run ci:check && npm run commit:atomic",
+    "commit:all": "npm run format:all && npm run ci:check:all && npm run commit:atomic",
+    "commit:quiet": "npm run --silent format >/dev/null && npm run --silent ci:check >/dev/null && npm run --silent commit:atomic",
+    "commit:atomic": "node ./scripts/git/atomic-commit.mjs",
+    "commit:atomic:yes": "node ./scripts/git/atomic-commit.mjs --yes",
+    "commit:atomic:dry-run": "node ./scripts/git/atomic-commit.mjs --dry-run",
+    "commit:atomic:staged": "node ./scripts/git/atomic-commit.mjs --staged-only"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "execa": "^9.5.1",
+    "grammy": "^1.30.0",
+    "p-queue": "^8.0.1"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.0.0",
+    "@commitlint/config-conventional": "^19.0.0",
+    "husky": "^9.0.0",
+    "markdownlint-cli2": "^0.22.0",
+    "prettier": "^3.0.0"
+  }
+}
