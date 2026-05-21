@@ -1,0 +1,28 @@
+# Secrets — никогда не коммитить
+.env
+.env.local
+.env.*.local
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime / временные файлы
+*.log
+.tmp/
+tmp/
+*.pid
+*.seed
+
+# Codex exec output
+codex-output/
+*.codex-tmp
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,63 @@
+{
+  "config": {
+    // Базируемся на дефолтах markdownlint, переопределяем под содержимое репо.
+    // Документация: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+    "default": true,
+
+    // MD013 — длина строки. Отключаем: README/NOTICE могут содержать длинные URL и таблицы.
+    "MD013": false,
+
+    // MD024 — повторяющиеся заголовки. Разрешаем в разных секциях.
+    "MD024": { "siblings_only": true },
+
+    // MD025 — единственный H1. front_matter_title: "" — не считаем поле title в frontmatter как H1.
+    "MD025": { "front_matter_title": "" },
+
+    // MD033 — inline HTML. Разрешаем (<details>, <br>, <kbd>).
+    "MD033": false,
+
+    // MD034 — голые URL. Разрешаем.
+    "MD034": false,
+
+    // MD036 — выделение вместо заголовка. Разрешаем.
+    "MD036": false,
+
+    // MD007 — отступ списков 2 пробела (совпадает с Prettier).
+    "MD007": { "indent": 2 },
+
+    // MD041 — первый заголовок должен быть H1. Отключаем: проверку H1 делает check-markdown.mjs.
+    "MD041": false,
+
+    // MD029 — стиль нумерации списков. Отключаем.
+    "MD029": false,
+
+    // MD051 — валидность якорей. Отключаем: не умеет обрабатывать кириллицу. Проверку делает check-markdown-links.mjs.
+    "MD051": false,
+
+    // MD009 — trailing whitespace. Защита есть в check-markdown.mjs.
+    "MD009": false,
+
+    // MD012 — multiple consecutive blank lines. Отключаем.
+    "MD012": false,
+
+    // MD022 — заголовки окружены пустыми строками. Отключаем.
+    "MD022": false,
+
+    // MD032 — списки окружены пустыми строками. Отключаем.
+    "MD032": false,
+
+    // MD028 — пустая строка внутри blockquote. Отключаем.
+    "MD028": false,
+  },
+  "ignores": [
+    "node_modules/**",
+    ".git/**",
+    ".claude/**",
+    // GitHub-шаблоны — особый формат, не документация для чтения.
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/ISSUE_TEMPLATE/**",
+    // Заглушки структуры репозитория.
+    "**/.gitkeep",
+  ],
+}
