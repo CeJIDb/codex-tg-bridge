@@ -157,12 +157,14 @@ describe("stream-throttle", () => {
     // Но backoffMultiplier=2 теперь, cooldown = 0 * 1000 * 2 = 0 → cooldownUntil = now()
     // Значит кадр должен пройти. Продвигаем немного чтобы timeSinceLast сработал.
     clock.advance(1500);
-    throttle.onDelta(" продолжение");
+    throttle.onDelta("второй текст");
     await Promise.resolve();
     await Promise.resolve();
 
     assert.equal(callCount, 2, "второй кадр прошёл после cooldown");
-    assert.equal(calls[1], "первый текст продолжение", "pending накоплен корректно");
+    // REPLACE-семантика: новый onDelta заменяет предыдущий pendingText.
+    // codex-cli не стримит дельты — каждый agent_message целостный.
+    assert.equal(calls[1], "второй текст", "новый текст заменяет предыдущий");
   });
 
   // -------------------------------------------------------------------------

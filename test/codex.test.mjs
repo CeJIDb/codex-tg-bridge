@@ -73,15 +73,21 @@ describe("makeJsonlParser", () => {
     assert.ok(deltas[2].includes("dau-gd.md"), "третий delta — про файл");
   });
 
-  it("getAnswer() аккумулирует все agent_message тексты", () => {
+  it("getAnswer() возвращает только ПОСЛЕДНИЙ agent_message (REPLACE-семантика)", () => {
+    // codex-cli шлёт промежуточные agent_message между tool-вызовами +
+    // финальный agent_message перед turn.completed. result.answer должен
+    // содержать только финальный, иначе пользователь видит весь reasoning trace.
     const parser = makeJsonlParser({});
 
     parser.push(LONG_CASE_JSONL + "\n");
     parser.flush();
 
     const answer = parser.getAnswer();
-    assert.ok(answer.includes("Читаю указанный topic"), "answer содержит первый кусок");
-    assert.ok(answer.includes("dau-gd.md"), "answer содержит последний кусок");
+    assert.ok(answer.includes("dau-gd.md"), "answer = последний agent_message");
+    assert.ok(
+      !answer.includes("Читаю указанный topic"),
+      "answer НЕ содержит первый промежуточный agent_message",
+    );
   });
 });
 

@@ -29,8 +29,12 @@ export function makeJsonlParser({ onDelta, onActivity } = {}) {
       if (item.type === "command_execution") {
         onActivity?.({ kind: "tool_done", label: item.command });
       } else if (item.type === "agent_message") {
+        // codex-cli 0.130 шлёт несколько agent_message за turn: промежуточные
+        // «мысли вслух» между tool-вызовами и финальный ответ. Финальный — это
+        // последний agent_message перед turn.completed, поэтому ПЕРЕЗАПИСЫВАЕМ,
+        // а не накапливаем. Иначе result.answer = весь reasoning trace + ответ.
         if (typeof item.text === "string" && item.text) {
-          answer += item.text;
+          answer = item.text;
           onDelta?.(item.text);
         }
       }

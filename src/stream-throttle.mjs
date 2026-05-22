@@ -53,21 +53,20 @@ export function createPlaceholderStream({ editText, now = Date.now }) {
 
   /** Выпускает один кадр (без проверки условий). */
   async function flush() {
+    const text = hasTextStarted ? pendingText : formatActivity(lastActivity);
+    // Пустой кадр не отправляем — Telegram возвращает "message text is empty".
+    // Сюда попадаем когда hasTextStarted=true, но pendingText уже сброшен после
+    // предыдущего успешного flush, а новых onDelta ещё не было.
+    if (!text) return;
     inFlight = true;
     lastEditAt = now();
-    const text = hasTextStarted ? pendingText : formatActivity(lastActivity);
-    // Снимаем snapshot pendingText; очистим только при успехе
     const snapshotPending = hasTextStarted ? pendingText : null;
     try {
       await editText(text);
-      // Успех: сбрасываем только тот текст, что уже ушёл
-      if (snapshotPending !== null) {
-        // Удаляем из pendingText ровно то, что было отправлено
-        if (pendingText.startsWith(snapshotPending)) {
-          pendingText = pendingText.slice(snapshotPending.length);
-        } else {
-          pendingText = "";
-        }
+      // Успех: очищаем pendingText, только если он не изменился во время отправки
+      // (новый onDelta во время flight перезаписал бы snapshotPending).
+      if (snapshotPending !== null && pendingText === snapshotPending) {
+        pendingText = "";
       }
       backoffMultiplier = 1;
     } catch (err) {
@@ -119,10 +118,15 @@ export function createPlaceholderStream({ editText, now = Date.now }) {
   }
 
   return {
-    /** Событие фрагмента текста из модели. */
+    /**
+     * Событие текста от модели. В codex-cli 0.130 каждый agent_message —
+     * это завершённое сообщение (промежуточное «мышление вслух» или финал),
+     * а не дельта. Поэтому ПЕРЕЗАПИСЫВАЕМ pendingText, не накапливаем —
+     * иначе placeholder склеит весь reasoning trace.
+     */
     onDelta(text) {
       if (aborted || finalized) return;
-      pendingText += text;
+      pendingText = text;
       hasTextStarted = true;
       maybeFlush();
     },
