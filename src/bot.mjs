@@ -2,7 +2,8 @@ import { Bot } from "grammy";
 import PQueue from "p-queue";
 import { performance } from "node:perf_hooks";
 import { config } from "./config.mjs";
-import { askCodex } from "./codex.mjs";
+import { askCodexStream } from "./codex.mjs";
+import { createPlaceholderStream } from "./stream-throttle.mjs";
 import { triage } from "./triage.mjs";
 import { mdToTgHtml, chunkByLines } from "./format.mjs";
 import { loadManifests, linkifyCitations, urlForMarkdown } from "./manifests.mjs";
@@ -16,7 +17,7 @@ const queue = new PQueue({ concurrency: 1 });
 // Хранилище ожидающих задач.
 const waiters = createWaiters();
 
-// Активная задача: { controller: AbortController, taskId: string } | null
+// Активная задача: { controller: AbortController, taskId: string, stream: object | null } | null
 let activeRun = null;
 
 // Ссылка на bot.api, устанавливается в createBot() и используется в recompute.
@@ -142,6 +143,10 @@ export async function createBot() {
     // (1) Прерываем активную задачу через AbortController.
     if (activeRun) {
       activeRun.controller.abort();
+      // Останавливаем тротлер — дальнейшие onDelta/onActivity превращаются в no-op.
+      if (activeRun.stream) {
+        activeRun.stream.onAborted();
+      }
       // Edit плейсхолдера активной задачи.
       const activeEntry = waiters._map.get(activeRun.taskId);
       if (activeEntry) {
@@ -236,10 +241,16 @@ export async function createBot() {
 
     const controller = new AbortController();
 
+    // Тротлер для промежуточных кадров.
+    const stream = createPlaceholderStream({
+      editText: (text) => safeEditById(bot.api, chatId, msgId, text),
+    });
+
+    let result;
     try {
-      const result = await queue.add(async () => {
-        // Фиксируем активный run.
-        activeRun = { controller, taskId };
+      result = await queue.add(async () => {
+        // Фиксируем активный run (с тротлером).
+        activeRun = { controller, taskId, stream };
 
         // Если recompute ещё не проставил markedActive — показываем «Выполняется…» сами.
         const entry = waiters._map.get(taskId);
@@ -248,13 +259,17 @@ export async function createBot() {
           await safeEditById(bot.api, chatId, msgId, "Выполняется…").catch(() => {});
         }
 
-        return askCodex(prompt, { signal: controller.signal });
+        return askCodexStream(prompt, {
+          onDelta: (text) => stream.onDelta(text),
+          onActivity: (event) => {
+            const label = `🔍 ${String(event.label ?? "").slice(0, 60)}`;
+            stream.onActivity({ kind: event.kind, label });
+          },
+          signal: controller.signal,
+        });
       });
-
-      logTurn({ who, prompt, ...result, source: "codex" });
-      await sendAnswer(ctx, placeholder, result.answer);
     } catch (err) {
-      if (err.name === "AbortError" || controller.signal.aborted) {
+      if (err.name === "AbortError" || err.isCanceled || controller.signal.aborted) {
         // Задача прервана через /cancel — плейсхолдер уже обновлён в cancel-хендлере.
         console.warn(`[${who}] задача прервана /cancel`);
       } else {
@@ -264,6 +279,22 @@ export async function createBot() {
           : `Ошибка: ${err.shortMessage || err.message || "unknown"}`;
         await safeEdit(ctx, placeholder, msg);
       }
+      unregister(waiters, taskId);
+      if (activeRun && activeRun.taskId === taskId) {
+        activeRun = null;
+      }
+      return;
+    }
+
+    try {
+      // Финализируем тротлер — ждёт cooldown и отправляет последний промежуточный кадр.
+      await stream.finalize();
+
+      logTurn({ who, prompt, ...result, source: "codex" });
+      await sendAnswer(ctx, placeholder, result.answer);
+    } catch (err) {
+      logError({ who, prompt, err });
+      await safeEdit(ctx, placeholder, `Ошибка: ${err.shortMessage || err.message || "unknown"}`);
     } finally {
       unregister(waiters, taskId);
       if (activeRun && activeRun.taskId === taskId) {

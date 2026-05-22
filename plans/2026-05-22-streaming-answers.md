@@ -147,19 +147,19 @@ delta-события, но и **все** типы событий в JSONL: `tool
       дропаются, финальный кадр (`finalize()`) ждёт окончания cooldown и отправляется в любом
       случае. Экспоненциальный бэк-офф: множитель 2 при повторном 429, max 16 сек. Реализовано в
       `src/stream-throttle.mjs`, тесты: `test/stream-throttle.test.mjs` (6 тестов, все зелёные).
-- [ ] Фаза 4. `AbortController` + `/cancel`. В `bot.mjs` хранить
+- [x] Фаза 4. `AbortController` + `/cancel`. В `bot.mjs` хранить
       `activeRun: { controller, chatId } | null`. На старте задачи —
       `controller = new     AbortController()`, передать `controller.signal` в `askCodexStream`. В
       `/cancel` — если есть `activeRun` и это тот же chat → `controller.abort()` + `editMessageText`
       плейсхолдера на «Отменено». Тротлер видит, что стрим отменён, перестаёт обрабатывать
       дальнейшие onDelta.
-- [ ] Фаза 5. Финальный кадр: после `await queue.add(...)` — текущий `sendAnswer` (HTML + чанки).
+- [x] Фаза 5. Финальный кадр: после `await queue.add(...)` — текущий `sendAnswer` (HTML + чанки).
       Первый чанк перетирает накопленный plain в placeholder (через `safeEdit` с уважением к
       cooldown), остальные — `safeReply`.
 - [ ] Фаза 6. Тесты на `node:test`: модуль-тест тротлера (`mock.timers`), парсер дельт на
       зафиксированном куске JSONL из Фазы 0, тест на накопительный буфер (разрез строки), тест на
       abort (controller.abort() → промис реджектится). Без внешних библиотек.
-- [ ] Фаза 7. Smoke + `npm run ci:check`. Проверить вручную: длинный ответ + `/cancel` посередине,
+- [x] Фаза 7. Smoke + `npm run ci:check`. Проверить вручную: длинный ответ + `/cancel` посередине,
       два параллельных вопроса (изоляция accumulator'ов), искусственный 429 (быстрый цикл правок).
 
 ## Итог
@@ -232,6 +232,19 @@ askCodexStream(prompt, { onDelta, onActivity, signal });
 - накопительный буфер: разрез строки на два чанка, несколько строк в одном чанке, `flush()` для
   хвоста без `\n`.
 - abort: `execa` с `cancelSignal` реджектит промис с `isCanceled=true`.
+
+### Фазы 4–5: интеграция в `bot.mjs`
+
+`bot.mjs` переключён с `askCodex` на `askCodexStream`. Тротлер создаётся на каждый run до
+`queue.add`: `editText` направлен в `safeEditById(bot.api, chatId, msgId, text)`. В `activeRun`
+добавлено поле `stream`; при `/cancel` вызывается `stream.onAborted()` перед `controller.abort()`,
+что немедленно останавливает промежуточные кадры.
+
+После `queue.add` (когда `askCodexStream` завершился) вызывается `stream.finalize()` — ждёт cooldown
+и отправляет последний промежуточный кадр. Затем `sendAnswer` перетирает placeholder финальным
+HTML-ответом через `safeEdit`; дополнительные чанки — через `safeReply`. AbortError и `isCanceled`
+перехватываются отдельно (нет лога ошибки, нет обновления placeholder — `/cancel`-хендлер уже его
+обновил).
 
 ### Фазы 2–3: тротлер `createPlaceholderStream`
 

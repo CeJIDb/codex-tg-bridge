@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Claude 
+.claude/worktrees/
+
 # Node
 node_modules/
 npm-debug.log*
