@@ -1,11 +1,10 @@
 import { Bot } from "grammy";
 import PQueue from "p-queue";
-import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
 import { config } from "./config.mjs";
 import { askCodex } from "./codex.mjs";
 import { triage } from "./triage.mjs";
 import { mdToTgHtml, chunkByLines } from "./format.mjs";
+import { loadManifests, linkifyCitations, urlForMarkdown } from "./manifests.mjs";
 
 const TELEGRAM_LIMIT = 4000;
 const queue = new PQueue({ concurrency: 1 });
@@ -143,100 +142,46 @@ export async function createBot() {
 
 // --- /sources helpers ---
 
+// Строим markdown-список и пропускаем через mdToTgHtml — экранирование
+// HTML-спецсимволов и преобразование [text](url) в <a> делает за нас format.mjs.
 async function buildSourcesList() {
-  const sourcesDir = join(config.graphRepoPath, "sources");
-  let entries;
-  try {
-    entries = await readdir(sourcesDir, { withFileTypes: true });
-  } catch {
-    // Нет sources/ — пробуем корневой MANIFEST.md
-    const rootManifest = join(config.graphRepoPath, "MANIFEST.md");
-    try {
-      const content = await readFile(rootManifest, "utf8");
-      const docs = parseManifestTable(content);
-      if (docs.length > 0) return formatDocList("Источники", docs);
-    } catch {
-      // ничего нет
-    }
-    return "Директория <code>sources/</code> не найдена в графе.";
-  }
+  const { sections } = await loadManifests();
+  if (sections.length === 0) return "Манифесты не найдены.";
 
-  const dirs = entries.filter((e) => e.isDirectory()).sort((a, b) => a.name.localeCompare(b.name));
+  const blocks = sections.map(({ issuer, docs }) => {
+    const heading = issuer ? issuer.toUpperCase() : "Источники";
+    if (docs.length === 0) return `**${heading}** — манифест не распознан`;
+    return `**${heading}**\n${docs.map(formatDocMd).join("\n")}`;
+  });
 
-  const sections = [];
-  for (const ent of dirs) {
-    const manifestPath = join(sourcesDir, ent.name, "MANIFEST.md");
-    let content;
-    try {
-      content = await readFile(manifestPath, "utf8");
-    } catch {
-      continue;
-    }
-    const docs = parseManifestTable(content);
-    sections.push(
-      docs.length > 0
-        ? formatDocList(ent.name.toUpperCase(), docs)
-        : `<b>${ent.name.toUpperCase()}</b> — манифест не распознан`,
-    );
-  }
-
-  return sections.length > 0 ? sections.join("\n\n") : "Манифесты не найдены.";
+  return mdToTgHtml(blocks.join("\n\n"));
 }
 
-function formatDocList(heading, docs) {
-  return `<b>${heading}</b>\n${docs.map((d) => `• <code>${d.code}</code> — ${d.title}`).join("\n")}`;
-}
-
-// Разбирает markdown-таблицу с колонками code и title.
-function parseManifestTable(md) {
-  const lines = md.split("\n");
-  let codeIdx = -1;
-  let titleIdx = -1;
-  let headerFound = false;
-  const docs = [];
-
-  for (const line of lines) {
-    if (!line.trim().startsWith("|")) continue;
-    const cells = line
-      .split("|")
-      .map((c) => c.trim())
-      .filter((_, i, arr) => i > 0 && i < arr.length - 1);
-    if (cells.length === 0) continue;
-
-    // Разделитель заголовка
-    if (cells.every((c) => /^[-:]+$/.test(c))) continue;
-
-    if (!headerFound) {
-      const lower = cells.map((c) => c.toLowerCase());
-      codeIdx = lower.findIndex((c) => c === "code");
-      titleIdx = lower.findIndex((c) => c === "title");
-      if (codeIdx >= 0 && titleIdx >= 0) headerFound = true;
-      continue;
-    }
-
-    const code = stripMd(cells[codeIdx] ?? "");
-    const title = stripMd(cells[titleIdx] ?? "");
-    if (code && title) docs.push({ code, title });
-  }
-  return docs;
-}
-
-// Убрать базовую markdown-разметку из ячейки таблицы
-function stripMd(s) {
-  return s
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/[*_`]/g, "")
-    .trim();
+function formatDocMd(d) {
+  const url = urlForMarkdown(d.url);
+  const code = url ? `[${d.code}](${url})` : `\`${d.code}\``;
+  return `• ${code} — ${d.title}`;
 }
 
 // --- общие вспомогательные функции ---
 
 async function sendAnswer(ctx, placeholder, text) {
-  const html = mdToTgHtml(text);
+  const linked = await tryLinkify(text);
+  const html = mdToTgHtml(linked);
   const chunks = chunkByLines(html, TELEGRAM_LIMIT);
   await safeEdit(ctx, placeholder, chunks[0], text);
   for (let i = 1; i < chunks.length; i++) {
     await safeReply(ctx, chunks[i]);
+  }
+}
+
+async function tryLinkify(md) {
+  try {
+    const { byCode } = await loadManifests();
+    return linkifyCitations(md, byCode);
+  } catch (err) {
+    console.warn("Не удалось подгрузить манифесты для линкификации:", err.message);
+    return md;
   }
 }
 
