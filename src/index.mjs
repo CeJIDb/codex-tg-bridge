@@ -1,7 +1,7 @@
 import { createBot } from "./bot.mjs";
 import { config } from "./config.mjs";
 
-const bot = createBot();
+const bot = await createBot();
 
 const stop = async (signal) => {
   console.log(`\n${signal} → останавливаю бота…`);

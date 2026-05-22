@@ -1,5 +1,7 @@
 import { Bot } from "grammy";
 import PQueue from "p-queue";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { config } from "./config.mjs";
 import { askCodex } from "./codex.mjs";
 import { triage } from "./triage.mjs";
@@ -8,8 +10,29 @@ import { mdToTgHtml, chunkByLines } from "./format.mjs";
 const TELEGRAM_LIMIT = 4000;
 const queue = new PQueue({ concurrency: 1 });
 
-export function createBot() {
+const BOT_COMMANDS = [
+  { command: "help", description: "Что умеет бот" },
+  { command: "sources", description: "Список источников в графе" },
+  { command: "status", description: "Состояние бота и очереди" },
+  { command: "cancel", description: "Отменить задачи в очереди" },
+  { command: "menu", description: "Все команды" },
+];
+
+const HELP_TEXT = [
+  "<b>Лоцман</b> — навигатор по графу нормативки.",
+  "",
+  "Задай вопрос текстом — найду цитаты и связи в РМРС, ИМО, ГОСТ, IEC/ISO.",
+  "",
+  "Примеры:",
+  "• Какие требования к системам пожаротушения на танкерах?",
+  "• СОЛАС II-2 правило 4 — основные пункты",
+  "• Чем ГОСТ Р 51841 отличается от IEC 61131-2?",
+].join("\n");
+
+export async function createBot() {
   const bot = new Bot(config.botToken);
+
+  await bot.api.setMyCommands(BOT_COMMANDS);
 
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
@@ -24,6 +47,62 @@ export function createBot() {
     await ctx.reply(
       "Лоцман на связи. Задавай вопрос по нормативке (РМРС, ИМО, ГОСТ, IEC/ISO) — проведу через граф.",
     );
+  });
+
+  bot.command("help", async (ctx) => {
+    await ctx.reply(HELP_TEXT, { parse_mode: "HTML" });
+  });
+
+  bot.command("menu", async (ctx) => {
+    const lines = BOT_COMMANDS.map((c) => `/${c.command} — ${c.description}`);
+    await ctx.reply(lines.join("\n"));
+  });
+
+  bot.command("status", async (ctx) => {
+    const pending = queue.size;
+    const running = queue.pending;
+    const queueState =
+      running > 0
+        ? `выполняется${pending > 0 ? `, ${pending} в ожидании` : ""}`
+        : pending > 0
+          ? `${pending} в ожидании`
+          : "свободна";
+    const lines = [
+      "<b>Состояние Лоцмана</b>",
+      `Модель: <code>${config.codexModel ?? "(из ~/.codex/config.toml)"}</code>`,
+      `Усилие: <code>${config.codexEffort ?? "medium"}</code>`,
+      `Таймаут: <code>${config.codexTimeoutMs / 1000} с</code>`,
+      `Очередь: ${queueState}`,
+    ];
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+  });
+
+  bot.command("cancel", async (ctx) => {
+    const pending = queue.size;
+    const running = queue.pending;
+    queue.clear();
+    if (pending === 0 && running === 0) {
+      await ctx.reply("Очередь пуста.");
+    } else if (pending === 0) {
+      await ctx.reply("Ожидающих задач нет. Активный запрос уже выполняется — дождись ответа.");
+    } else {
+      const suffix = running > 0 ? " Активный запрос уже выполняется." : "";
+      await ctx.reply(`Удалено из очереди: ${pending}.${suffix}`);
+    }
+  });
+
+  bot.command("sources", async (ctx) => {
+    const placeholder = await ctx.reply("Читаю граф…");
+    try {
+      const html = await buildSourcesList();
+      const chunks = chunkByLines(html, TELEGRAM_LIMIT);
+      await safeEdit(ctx, placeholder, chunks[0]);
+      for (let i = 1; i < chunks.length; i++) {
+        await safeReply(ctx, chunks[i]);
+      }
+    } catch (err) {
+      await safeEdit(ctx, placeholder, `Ошибка чтения: ${err.message}`);
+    }
   });
 
   bot.on("message:text", async (ctx) => {
@@ -61,6 +140,96 @@ export function createBot() {
   bot.catch((err) => console.error("Bot error:", err));
   return bot;
 }
+
+// --- /sources helpers ---
+
+async function buildSourcesList() {
+  const sourcesDir = join(config.graphRepoPath, "sources");
+  let entries;
+  try {
+    entries = await readdir(sourcesDir, { withFileTypes: true });
+  } catch {
+    // Нет sources/ — пробуем корневой MANIFEST.md
+    const rootManifest = join(config.graphRepoPath, "MANIFEST.md");
+    try {
+      const content = await readFile(rootManifest, "utf8");
+      const docs = parseManifestTable(content);
+      if (docs.length > 0) return formatDocList("Источники", docs);
+    } catch {
+      // ничего нет
+    }
+    return "Директория <code>sources/</code> не найдена в графе.";
+  }
+
+  const dirs = entries.filter((e) => e.isDirectory()).sort((a, b) => a.name.localeCompare(b.name));
+
+  const sections = [];
+  for (const ent of dirs) {
+    const manifestPath = join(sourcesDir, ent.name, "MANIFEST.md");
+    let content;
+    try {
+      content = await readFile(manifestPath, "utf8");
+    } catch {
+      continue;
+    }
+    const docs = parseManifestTable(content);
+    sections.push(
+      docs.length > 0
+        ? formatDocList(ent.name.toUpperCase(), docs)
+        : `<b>${ent.name.toUpperCase()}</b> — манифест не распознан`,
+    );
+  }
+
+  return sections.length > 0 ? sections.join("\n\n") : "Манифесты не найдены.";
+}
+
+function formatDocList(heading, docs) {
+  return `<b>${heading}</b>\n${docs.map((d) => `• <code>${d.code}</code> — ${d.title}`).join("\n")}`;
+}
+
+// Разбирает markdown-таблицу с колонками code и title.
+function parseManifestTable(md) {
+  const lines = md.split("\n");
+  let codeIdx = -1;
+  let titleIdx = -1;
+  let headerFound = false;
+  const docs = [];
+
+  for (const line of lines) {
+    if (!line.trim().startsWith("|")) continue;
+    const cells = line
+      .split("|")
+      .map((c) => c.trim())
+      .filter((_, i, arr) => i > 0 && i < arr.length - 1);
+    if (cells.length === 0) continue;
+
+    // Разделитель заголовка
+    if (cells.every((c) => /^[-:]+$/.test(c))) continue;
+
+    if (!headerFound) {
+      const lower = cells.map((c) => c.toLowerCase());
+      codeIdx = lower.findIndex((c) => c === "code");
+      titleIdx = lower.findIndex((c) => c === "title");
+      if (codeIdx >= 0 && titleIdx >= 0) headerFound = true;
+      continue;
+    }
+
+    const code = stripMd(cells[codeIdx] ?? "");
+    const title = stripMd(cells[titleIdx] ?? "");
+    if (code && title) docs.push({ code, title });
+  }
+  return docs;
+}
+
+// Убрать базовую markdown-разметку из ячейки таблицы
+function stripMd(s) {
+  return s
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_`]/g, "")
+    .trim();
+}
+
+// --- общие вспомогательные функции ---
 
 async function sendAnswer(ctx, placeholder, text) {
   const html = mdToTgHtml(text);
