@@ -10,6 +10,7 @@
     "test:triage": "node test/triage.test.mjs",
     "test:format": "node test/format.test.mjs",
     "test:queue-state": "node --test test/queue-state.test.mjs",
+    "test:reply-context": "node --test test/reply-context.test.mjs",
     "format": "node ./scripts/lint/format-changed.mjs",
     "format:check": "node ./scripts/lint/format-changed.mjs --check",
     "format:all": "prettier --write \"**/*.{md,json,jsonc,yml,yaml,js,mjs,cjs}\"",
