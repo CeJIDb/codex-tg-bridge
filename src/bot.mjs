@@ -287,8 +287,8 @@ export async function createBot() {
     }
 
     try {
-      // Финализируем тротлер — ждёт cooldown и отправляет последний промежуточный кадр.
-      await stream.finalize();
+      // Останавливаем тротлер — промежуточный кадр не нужен, sendAnswer перетрёт placeholder.
+      stream.onAborted();
 
       logTurn({ who, prompt, ...result, source: "codex" });
       await sendAnswer(ctx, placeholder, result.answer);
@@ -361,27 +361,56 @@ async function tryLinkify(md) {
 
 // Сначала пытаемся отредактировать с HTML. Если Telegram отверг разметку
 // (некорректные теги в выводе Codex) — fallback в plain text с исходным markdown.
+// На 429 делаем один ретрай после retry_after, не сваливаемся в safeReply.
 async function safeEdit(ctx, placeholder, html, fallbackText) {
   const chatId = placeholder.chat.id;
   const msgId = placeholder.message_id;
-  try {
+
+  async function tryEdit() {
     await ctx.api.editMessageText(chatId, msgId, html, { parse_mode: "HTML" });
+  }
+
+  async function tryEditPlain() {
+    const plain = fallbackText ?? stripTags(html);
+    try {
+      await ctx.api.editMessageText(chatId, msgId, plain);
+    } catch {
+      await ctx.reply(plain);
+    }
+  }
+
+  try {
+    await tryEdit();
     return;
   } catch (err) {
     if (isParseError(err)) {
       console.warn("HTML parse rejected, шлю plain:", err.description || err.message);
+      await tryEditPlain();
+      return;
+    }
+    const retryAfter = err?.parameters?.retry_after;
+    if (retryAfter != null) {
+      await sleep(retryAfter * 1000 + 200);
       try {
-        await ctx.api.editMessageText(chatId, msgId, fallbackText ?? stripTags(html));
+        await tryEdit();
         return;
       } catch (err2) {
-        await ctx.reply(fallbackText ?? stripTags(html));
-        return;
+        if (isParseError(err2)) {
+          console.warn(
+            "HTML parse rejected после 429-ретрая, шлю plain:",
+            err2.description || err2.message,
+          );
+          await tryEditPlain();
+          return;
+        }
+        console.warn("edit не удался после 429-ретрая:", err2.description || err2.message);
       }
+    } else {
+      console.warn(
+        "editMessageText не удалось, шлю отдельным сообщением:",
+        err.description || err.message,
+      );
     }
-    console.warn(
-      "editMessageText не удалось, шлю отдельным сообщением:",
-      err.description || err.message,
-    );
     await safeReply(ctx, html, fallbackText);
   }
 }
