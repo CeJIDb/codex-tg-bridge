@@ -68,23 +68,28 @@ codex-tg-bridge/
 
 ## Hard rules
 
-1. **`read-only` sandbox is untouchable.** In [src/codex.mjs](src/codex.mjs) the
+1. **Never commit or push.** The agent does not run `git commit`, `git add`, `git push`,
+   `npm run commit*`, `git merge`, `git rebase`, or any other history-mutating command. Stage
+   nothing, author nothing. The user commits manually. This holds even if the user says "save",
+   "finish", or "wrap up" — those mean "stop editing", not "commit". Ask explicitly before touching
+   git state.
+2. **`read-only` sandbox is untouchable.** In [src/codex.mjs](src/codex.mjs) the
    `--sandbox read-only` flag guarantees the bot cannot write anything into the graph repo. Don't
    remove, don't make conditional, don't swap for `workspace-write`. This is the project's security
    contract.
-2. **Whitelist is mandatory.** The middleware in `bot.mjs` rejects foreign `user_id`s. Don't weaken
+3. **Whitelist is mandatory.** The middleware in `bot.mjs` rejects foreign `user_id`s. Don't weaken
    the check, don't add a "default" user, don't read ids from the message body.
-3. **Secrets are not committed.** `.env` is in `.gitignore`; edit only [env.example](env.example).
+4. **Secrets are not committed.** `.env` is in `.gitignore`; edit only [env.example](env.example).
    The `block-secret-write.mjs` hook blocks writes to dotfiles with credentials.
-4. **`codex` is never invoked outside the queue.** `concurrency=1` in `p-queue` — don't remove or
+5. **`codex` is never invoked outside the queue.** `concurrency=1` in `p-queue` — don't remove or
    raise it. Parallel `codex` runs against the same `GRAPH_REPO_PATH` break `--ephemeral` sessions
    and burn tokens in bulk.
-5. **DeepPavlov Dream borrowings** in [src/triage.mjs](src/triage.mjs) must remain separable (the
+6. **DeepPavlov Dream borrowings** in [src/triage.mjs](src/triage.mjs) must remain separable (the
    `DEEPPAVLOV` block, links in comments) — otherwise [NOTICE.md](NOTICE.md) stops matching reality.
    If you change the intents, sync NOTICE.
-6. **`GRAPH_REPO_PATH` is an external path.** Don't hardcode it, don't assume specific contents (the
+7. **`GRAPH_REPO_PATH` is an external path.** Don't hardcode it, don't assume specific contents (the
    bot works on top of any graph, not only marine-requirements-graph).
-7. **Tests without a framework.** These are `node --test`-compatible scripts on `node:test` /
+8. **Tests without a framework.** These are `node --test`-compatible scripts on `node:test` /
    `node:assert`. Don't pull jest/vitest for a single file.
 
 ## Lint, format, CI
@@ -110,21 +115,27 @@ and semantic-PR-title.
 
 ## Git workflow
 
+Reminder: the agent never runs commit/add/push (see Hard rule #1). The conventions below describe
+how the **user** commits, so you can advise on commit messages or branch names when asked — not so
+you can execute them.
+
 - **Conventional Commits.** Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`,
   `build`, `perf`, `revert`. Header ≤ 100 chars. Type and scope in latin, **subject in Russian**
   (see [commitlint.config.cjs](commitlint.config.cjs)).
 - **Branch names:** `feature/*`, `fix/*`, `docs/*`, `chore/*`, `hotfix/*` — lowercase latin,
   kebab-case. Enforced by [scripts/git/check-branch-name.mjs](scripts/git/check-branch-name.mjs).
-- **Atomic commits.** Use `npm run commit` (format + ci:check on changed → atomic commit). Preview
-  without committing: `npm run commit:atomic:dry-run`.
-- **Never push to `main`.** The hook
-  [scripts/claude-hooks/block-push-to-main.mjs](scripts/claude-hooks/block-push-to-main.mjs) will
-  block you — that is by design.
-- **Don't use `git add -A` / `git add .`** — blocked by
+- **Atomic commits.** The user runs `npm run commit` (format + ci:check on changed → atomic commit).
+  Preview without committing: `npm run commit:atomic:dry-run`.
+- **Pushes to `main` are blocked** by
+  [scripts/claude-hooks/block-push-to-main.mjs](scripts/claude-hooks/block-push-to-main.mjs) — by
+  design.
+- **`git add -A` / `git add .` are blocked** by
   [scripts/claude-hooks/block-unsafe-git-add.mjs](scripts/claude-hooks/block-unsafe-git-add.mjs).
-  Stage explicit paths.
 - Husky `pre-commit` runs the agent reminder; `commit-msg` runs commitlint. Don't skip with
   `--no-verify`.
+
+Read-only git is fine: `git status`, `git diff`, `git log`, `git show`, `git blame` — use them
+freely to understand state before editing.
 
 ## Hooks worth knowing about
 
