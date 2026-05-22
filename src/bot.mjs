@@ -8,6 +8,8 @@ import { triage } from "./triage.mjs";
 import { mdToTgHtml, chunkByLines } from "./format.mjs";
 import { loadManifests, linkifyCitations, urlForMarkdown } from "./manifests.mjs";
 import { createWaiters, register, unregister, computePositions } from "./queue-state.mjs";
+import { recallChain, remember } from "./reply-context.mjs";
+import { withReplyContext } from "./prompt.mjs";
 
 const TELEGRAM_LIMIT = 4000;
 const EDIT_THROTTLE_MS = 3000;
@@ -209,6 +211,26 @@ export async function createBot() {
       return;
     }
 
+    // Reply-контекст: если юзер ответил на наше сообщение — собрать цепочку.
+    const replyMsg = ctx.message.reply_to_message;
+    let recalled = { chain: [], truncated: false };
+    if (config.replyContextDepth > 0 && replyMsg?.from?.id === ctx.me.id) {
+      recalled = recallChain(
+        {
+          chatId: ctx.message.chat.id,
+          threadId: ctx.message.message_thread_id ?? null,
+          msgId: replyMsg.message_id,
+        },
+        config.replyContextDepth,
+      );
+    }
+    const incomingParentEntryId = recalled.chain.at(-1)?.entryId ?? null;
+    const userText = prompt;
+    const fullPrompt = withReplyContext(
+      recalled.chain.map(({ question, answer }) => ({ question, answer })),
+      userText,
+    );
+
     // Отправляем плейсхолдер.
     let placeholder;
     try {
@@ -259,7 +281,7 @@ export async function createBot() {
           await safeEditById(bot.api, chatId, msgId, "Выполняется…").catch(() => {});
         }
 
-        return askCodexStream(prompt, {
+        return askCodexStream(fullPrompt, {
           onDelta: (text) => stream.onDelta(text),
           onActivity: (event) => {
             const label = `🔍 ${String(event.label ?? "").slice(0, 60)}`;
@@ -290,10 +312,29 @@ export async function createBot() {
       // Останавливаем тротлер — промежуточный кадр не нужен, sendAnswer перетрёт placeholder.
       stream.onAborted();
 
-      logTurn({ who, prompt, ...result, source: "codex" });
-      await sendAnswer(ctx, placeholder, result.answer);
+      logTurn({ who, prompt: userText, ...result, source: "codex" });
+
+      const branchDepth = recalled.chain.length + 1;
+      const indicator = formatBranchIndicator({
+        depth: branchDepth,
+        max: config.replyContextDepth,
+        truncated: recalled.truncated,
+      });
+      const answerWithIndicator = indicator ? `${result.answer}\n\n${indicator}` : result.answer;
+
+      const { msgIds: sentMsgIds } = await sendAnswer(ctx, placeholder, answerWithIndicator);
+
+      remember(
+        {
+          chatId: ctx.message.chat.id,
+          threadId: ctx.message.message_thread_id ?? null,
+          msgIds: sentMsgIds,
+          parentEntryId: incomingParentEntryId,
+        },
+        { question: userText, answer: result.answer },
+      );
     } catch (err) {
-      logError({ who, prompt, err });
+      logError({ who, prompt: userText, err });
       await safeEdit(ctx, placeholder, `Ошибка: ${err.shortMessage || err.message || "unknown"}`);
     } finally {
       unregister(waiters, taskId);
@@ -305,6 +346,13 @@ export async function createBot() {
 
   bot.catch((err) => console.error("Bot error:", err));
   return bot;
+}
+
+// --- reply-context helpers ---
+
+function formatBranchIndicator({ depth, max, truncated }) {
+  if (!max || !depth) return "";
+  return `— Ветка ${depth}/${max}${truncated ? " · ранние шаги выпали" : ""}`;
 }
 
 // --- helpers: текст позиции ---
@@ -344,9 +392,12 @@ async function sendAnswer(ctx, placeholder, text) {
   const html = mdToTgHtml(linked);
   const chunks = chunkByLines(html, TELEGRAM_LIMIT);
   await safeEdit(ctx, placeholder, chunks[0], text);
+  const sentMsgIds = [placeholder.message_id];
   for (let i = 1; i < chunks.length; i++) {
-    await safeReply(ctx, chunks[i]);
+    const sent = await safeReply(ctx, chunks[i]);
+    if (sent?.message_id) sentMsgIds.push(sent.message_id);
   }
+  return { msgIds: sentMsgIds };
 }
 
 async function tryLinkify(md) {
@@ -442,12 +493,11 @@ async function safeEditById(api, chatId, msgId, text) {
 
 async function safeReply(ctx, html, fallbackText) {
   try {
-    await ctx.reply(html, { parse_mode: "HTML" });
+    return await ctx.reply(html, { parse_mode: "HTML" });
   } catch (err) {
     if (isParseError(err)) {
       console.warn("HTML parse rejected, шлю plain:", err.description || err.message);
-      await ctx.reply(fallbackText ?? stripTags(html));
-      return;
+      return await ctx.reply(fallbackText ?? stripTags(html));
     }
     throw err;
   }

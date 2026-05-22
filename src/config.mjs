@@ -39,4 +39,12 @@ export const config = {
   codexEffort: process.env.CODEX_EFFORT || "medium",
   codexTimeoutMs: Number(process.env.CODEX_TIMEOUT_MS ?? 300000),
   codexDebugDir: process.env.CODEX_DEBUG_DIR || null,
+  replyContextDepth: (() => {
+    const raw = process.env.REPLY_CONTEXT_DEPTH ?? 3;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error(`REPLY_CONTEXT_DEPTH: "${raw}" не является целым числом >= 0`);
+    }
+    return n;
+  })(),
 };

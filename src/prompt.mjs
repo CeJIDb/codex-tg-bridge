@@ -71,3 +71,45 @@ export const SYSTEM_PREAMBLE = `Ты — «Лоцман», навигатор п
 export function withSystemPreamble(userPrompt) {
   return `${SYSTEM_PREAMBLE}Вопрос:\n${userPrompt}`;
 }
+
+/**
+ * Обрезает предыдущий ответ до budget символов, сохраняя блок «Источники:» целиком.
+ * @param {string} prevA
+ * @param {number} budget
+ * @returns {string}
+ */
+export function truncatePreservingSources(prevA, budget = 2000) {
+  if (prevA.length <= budget) return prevA;
+
+  const marker = "…[обрезано]\n";
+
+  const nlIdx = prevA.lastIndexOf("\nИсточники:");
+  if (nlIdx !== -1) {
+    const sources = prevA.slice(nlIdx); // "\nИсточники:..."
+    const body = prevA.slice(0, nlIdx);
+    const bodyBudget = budget - marker.length - sources.length;
+    if (bodyBudget < 0) return body.slice(0, Math.max(0, budget - sources.length)) + sources;
+    return body.slice(0, bodyBudget) + marker + sources;
+  }
+
+  // Нет блока Источники:
+  return prevA.slice(0, budget) + "…[обрезано]";
+}
+
+/**
+ * Формирует промпт с контекстом предыдущих вопросов/ответов цепочки.
+ * @param {Array<{question: string, answer: string}>} chain
+ * @param {string} newQ
+ * @returns {string}
+ */
+export function withReplyContext(chain, newQ) {
+  if (!chain || chain.length === 0) return newQ;
+
+  const parts = chain.map(({ question, answer }, i) => {
+    const n = i + 1;
+    const truncated = truncatePreservingSources(answer, 2000);
+    return `Q${n}: ${question}\nA${n}: ${truncated}`;
+  });
+
+  return `Контекст:\n${parts.join("\n")}\n\nНовый вопрос: ${newQ}`;
+}
