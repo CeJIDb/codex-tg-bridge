@@ -1,3 +1,5 @@
 #!/usr/bin/env sh
 
 node ./scripts/git/git-workflow-agent-reminder.mjs --staged
+
+npm run check:plans:staged
