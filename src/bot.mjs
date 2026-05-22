@@ -1,13 +1,72 @@
 import { Bot } from "grammy";
 import PQueue from "p-queue";
+import { performance } from "node:perf_hooks";
 import { config } from "./config.mjs";
 import { askCodex } from "./codex.mjs";
 import { triage } from "./triage.mjs";
 import { mdToTgHtml, chunkByLines } from "./format.mjs";
 import { loadManifests, linkifyCitations, urlForMarkdown } from "./manifests.mjs";
+import { createWaiters, register, unregister, computePositions } from "./queue-state.mjs";
 
 const TELEGRAM_LIMIT = 4000;
+const EDIT_THROTTLE_MS = 3000;
+
 const queue = new PQueue({ concurrency: 1 });
+
+// Хранилище ожидающих задач.
+const waiters = createWaiters();
+
+// Активная задача: { controller: AbortController, taskId: string } | null
+let activeRun = null;
+
+// Ссылка на bot.api, устанавливается в createBot() и используется в recompute.
+let _botApi = null;
+
+// --- recompute: пересчёт позиций после каждого сдвига очереди ---
+// Подписываемся только на 'next': Фаза 0 подтвердила, что 'error' всегда идёт до 'next',
+// так что к моменту 'next' pending уже декрементирован и пересчёт позиций актуален.
+queue.on("next", () => {
+  if (!_botApi) return;
+
+  const entries = [...waiters._map.entries()].map(([taskId, e]) => ({
+    taskId,
+    registeredAt: e.registeredAt,
+  }));
+  if (entries.length === 0) return;
+
+  const positions = computePositions(entries);
+  const now = performance.now();
+
+  for (const [taskId, entry] of waiters._map) {
+    const newPos = positions.get(taskId);
+    if (newPos === undefined) continue;
+
+    if (newPos === 0) {
+      // Активная задача — показываем «Выполняется…» ровно один раз (флаг markedActive).
+      if (!entry.markedActive) {
+        entry.markedActive = true;
+        safeEditById(_botApi, entry.chatId, entry.msgId, "Выполняется…").catch((err) =>
+          console.warn("recompute active edit failed:", err.message),
+        );
+      }
+      continue;
+    }
+
+    // Ожидающая задача: тротлинг ≥ 3000 мс и только при реальной смене позиции.
+    const posChanged = newPos !== entry.lastShownPos;
+    const throttled = entry.lastEditAt !== null && now - entry.lastEditAt < EDIT_THROTTLE_MS;
+
+    if (posChanged && !throttled) {
+      const text = positionText(newPos);
+      safeEditById(_botApi, entry.chatId, entry.msgId, text)
+        .then(() => {
+          entry.lastShownPos = newPos;
+          entry.lastEditAt = performance.now();
+        })
+        .catch((err) => console.warn("recompute waiter edit failed:", err.message));
+    }
+  }
+});
 
 const BOT_COMMANDS = [
   { command: "help", description: "Что умеет бот" },
@@ -30,6 +89,7 @@ const HELP_TEXT = [
 
 export async function createBot() {
   const bot = new Bot(config.botToken);
+  _botApi = bot.api;
 
   await bot.api.setMyCommands(BOT_COMMANDS);
 
@@ -77,16 +137,43 @@ export async function createBot() {
   });
 
   bot.command("cancel", async (ctx) => {
-    const pending = queue.size;
-    const running = queue.pending;
+    const hadActive = activeRun !== null;
+
+    // (1) Прерываем активную задачу через AbortController.
+    if (activeRun) {
+      activeRun.controller.abort();
+      // Edit плейсхолдера активной задачи.
+      const activeEntry = waiters._map.get(activeRun.taskId);
+      if (activeEntry) {
+        await safeEditById(bot.api, activeEntry.chatId, activeEntry.msgId, "Отменено по /cancel.");
+      }
+    }
+
+    // Собираем ожидающих до очистки (исключаем активную задачу — она уже обработана).
+    const activeTaskId = activeRun?.taskId ?? null;
+    const waitingEntries = [...waiters._map.entries()].filter(
+      ([taskId]) => taskId !== activeTaskId,
+    );
+
+    // (3) Сериализованный фан-аут на ожидающих: rate 10 edit/сек.
+    for (const [, entry] of waitingEntries) {
+      await safeEditById(bot.api, entry.chatId, entry.msgId, "Отменено по /cancel.");
+      await sleep(100);
+    }
+
+    // (4) Очищаем очередь и waiters.
     queue.clear();
-    if (pending === 0 && running === 0) {
+    waiters._map.clear();
+    activeRun = null;
+
+    const pending = waitingEntries.length;
+    if (!hadActive && pending === 0) {
       await ctx.reply("Очередь пуста.");
-    } else if (pending === 0) {
-      await ctx.reply("Ожидающих задач нет. Активный запрос уже выполняется — дождись ответа.");
+    } else if (hadActive && pending === 0) {
+      await ctx.reply("Активный запрос прерван.");
     } else {
-      const suffix = running > 0 ? " Активный запрос уже выполняется." : "";
-      await ctx.reply(`Удалено из очереди: ${pending}.${suffix}`);
+      const suffix = hadActive ? " Активный запрос прерван." : "";
+      await ctx.reply(`Отменено: ${pending} ожидающих.${suffix}`);
     }
   });
 
@@ -117,27 +204,83 @@ export async function createBot() {
       return;
     }
 
-    const placeholder = await ctx.reply("Принял, думаю…");
-    const ahead = queue.size;
-    if (ahead > 0) {
-      await safeEdit(ctx, placeholder, `В очереди (${ahead} впереди)…`);
+    // Отправляем плейсхолдер.
+    let placeholder;
+    try {
+      placeholder = await ctx.reply("Принял, думаю…");
+    } catch (err) {
+      console.warn("Не смог отправить плейсхолдер:", err.message);
+      return;
     }
 
+    const chatId = placeholder.chat.id;
+    const msgId = placeholder.message_id;
+
+    // Регистрируем в waiters до queue.add.
+    const { taskId } = register(waiters, { chatId, msgId });
+
+    // Показываем начальную позицию в очереди (queue.size до add = число ожидающих впереди).
+    const ahead = queue.size;
+    if (ahead > 0) {
+      try {
+        await bot.api.editMessageText(chatId, msgId, positionText(ahead));
+        const entry = waiters._map.get(taskId);
+        if (entry) {
+          entry.lastShownPos = ahead;
+          entry.lastEditAt = performance.now();
+        }
+      } catch (err) {
+        console.warn("Не смог показать позицию в очереди:", err.message);
+      }
+    }
+
+    const controller = new AbortController();
+
     try {
-      const result = await queue.add(() => askCodex(prompt));
+      const result = await queue.add(async () => {
+        // Фиксируем активный run.
+        activeRun = { controller, taskId };
+
+        // Если recompute ещё не проставил markedActive — показываем «Выполняется…» сами.
+        const entry = waiters._map.get(taskId);
+        if (entry && !entry.markedActive) {
+          entry.markedActive = true;
+          await safeEditById(bot.api, chatId, msgId, "Выполняется…").catch(() => {});
+        }
+
+        return askCodex(prompt, { signal: controller.signal });
+      });
+
       logTurn({ who, prompt, ...result, source: "codex" });
       await sendAnswer(ctx, placeholder, result.answer);
     } catch (err) {
-      logError({ who, prompt, err });
-      const msg = err.timedOut
-        ? `Таймаут (${config.codexTimeoutMs} мс). Попробуй переформулировать короче.`
-        : `Ошибка: ${err.shortMessage || err.message || "unknown"}`;
-      await safeEdit(ctx, placeholder, msg);
+      if (err.name === "AbortError" || controller.signal.aborted) {
+        // Задача прервана через /cancel — плейсхолдер уже обновлён в cancel-хендлере.
+        console.warn(`[${who}] задача прервана /cancel`);
+      } else {
+        logError({ who, prompt, err });
+        const msg = err.timedOut
+          ? `Таймаут (${config.codexTimeoutMs} мс). Попробуй переформулировать короче.`
+          : `Ошибка: ${err.shortMessage || err.message || "unknown"}`;
+        await safeEdit(ctx, placeholder, msg);
+      }
+    } finally {
+      unregister(waiters, taskId);
+      if (activeRun && activeRun.taskId === taskId) {
+        activeRun = null;
+      }
     }
   });
 
   bot.catch((err) => console.error("Bot error:", err));
   return bot;
+}
+
+// --- helpers: текст позиции ---
+
+function positionText(pos) {
+  if (pos === 0) return "Выполняется…";
+  return `В очереди: #${pos + 1} (${pos} впереди)…`;
 }
 
 // --- /sources helpers ---
@@ -212,6 +355,31 @@ async function safeEdit(ctx, placeholder, html, fallbackText) {
   }
 }
 
+// Редактирование сообщения напрямую по chatId/msgId с обработкой 429.
+// Intermediate-кадры могут дропаться (тротлинг), финальный кадр гарантирован через retry.
+async function safeEditById(api, chatId, msgId, text) {
+  try {
+    await api.editMessageText(chatId, msgId, text);
+  } catch (err) {
+    const retryAfter = err?.parameters?.retry_after;
+    if (retryAfter != null) {
+      // 429 Too Many Requests: cooldown по retry_after, затем одна повторная попытка.
+      await sleep(retryAfter * 1000 + 200);
+      try {
+        await api.editMessageText(chatId, msgId, text);
+      } catch (err2) {
+        console.warn(
+          `safeEditById повтор не удался [${chatId}/${msgId}]:`,
+          err2.description || err2.message,
+        );
+      }
+      return;
+    }
+    // Не 429 — логируем (fire-and-forget контекст).
+    console.warn(`safeEditById не удалось [${chatId}/${msgId}]:`, err.description || err.message);
+  }
+}
+
 async function safeReply(ctx, html, fallbackText) {
   try {
     await ctx.reply(html, { parse_mode: "HTML" });
@@ -237,6 +405,10 @@ function stripTags(html) {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&amp;/g, "&");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function logTurn({ who, prompt, answer, model, effort, elapsedMs, tokens, source }) {

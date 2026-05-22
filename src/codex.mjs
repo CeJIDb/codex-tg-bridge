@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { config } from "./config.mjs";
 import { withSystemPreamble } from "./prompt.mjs";
 
-export async function askCodex(prompt) {
+export async function askCodex(prompt, { signal } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "codex-tg-"));
   const outFile = join(dir, "answer.txt");
 
@@ -38,6 +38,7 @@ export async function askCodex(prompt) {
   try {
     const child = execa("codex", args, {
       timeout: config.codexTimeoutMs,
+      cancelSignal: signal,
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
