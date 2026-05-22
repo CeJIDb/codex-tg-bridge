@@ -64,6 +64,10 @@
           {
             "type": "command",
             "command": "node $CLAUDE_PROJECT_DIR/scripts/claude-hooks/block-push-to-main.mjs"
+          },
+          {
+            "type": "command",
+            "command": "node $CLAUDE_PROJECT_DIR/scripts/claude-hooks/validate-staged-plans.mjs"
           }
         ]
       }
@@ -74,8 +78,45 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node $CLAUDE_PROJECT_DIR/scripts/claude-hooks/validate-plan-on-write.mjs"
+          },
+          {
+            "type": "command",
             "command": "node $CLAUDE_PROJECT_DIR/scripts/claude-hooks/format-on-write.mjs",
             "statusMessage": "Форматирование..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/claude-hooks/play-sound.sh stop"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/claude-hooks/play-sound.sh notify"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/claude-hooks/play-sound.sh notify"
           }
         ]
       }

@@ -43,28 +43,31 @@ codex-tg-bridge/
 ├── test/
 │   ├── format.test.mjs      ← run: `npm run test:format`
 │   └── triage.test.mjs      ← run: `npm run test:triage`
+├── plans/                   ← технические планы (один план = одна задача)
 ├── scripts/
 │   ├── lint/                ← format-changed, markdownlint-changed, custom checks
 │   ├── git/                 ← atomic-commit, check-branch-name, agent-reminder
-│   └── claude-hooks/        ← PreToolUse hooks (see below)
-├── .husky/                  ← pre-commit (agent-reminder), commit-msg (commitlint)
+│   ├── plans/               ← validate-plans.mjs
+│   └── claude-hooks/        ← PreToolUse / PostToolUse hooks (see below)
+├── .husky/                  ← pre-commit (agent-reminder + check:plans:staged), commit-msg
 └── .github/workflows/       ← ci, commitlint, semantic-pr-title
 ```
 
 ## Where to touch what
 
-| Task                                | File                                                            |
-| ----------------------------------- | --------------------------------------------------------------- |
-| Telegram handlers, queue, replies   | [src/bot.mjs](src/bot.mjs)                                      |
-| `codex exec` invocation, CLI args   | [src/codex.mjs](src/codex.mjs)                                  |
-| Token parsing from JSONL            | [src/codex.mjs](src/codex.mjs) — `parseTokens`                  |
-| System prompt / citation format     | [src/prompt.mjs](src/prompt.mjs)                                |
-| User whitelist                      | [src/config.mjs](src/config.mjs) + `ALLOWED_USER_IDS` in `.env` |
-| Markdown → Telegram HTML conversion | [src/format.mjs](src/format.mjs) — `mdToTgHtml`, `chunkByLines` |
-| Small-talk replies (skip Codex)     | [src/triage.mjs](src/triage.mjs) — `MANUAL` and `DEEPPAVLOV`    |
-| Atomic commits                      | [scripts/git/atomic-commit.mjs](scripts/git/atomic-commit.mjs)  |
-| Linters over changed files          | [scripts/lint/](scripts/lint/)                                  |
-| Safety hooks for the agent          | [scripts/claude-hooks/](scripts/claude-hooks/)                  |
+| Task                                | File                                                                                    |
+| ----------------------------------- | --------------------------------------------------------------------------------------- |
+| Telegram handlers, queue, replies   | [src/bot.mjs](src/bot.mjs)                                                              |
+| `codex exec` invocation, CLI args   | [src/codex.mjs](src/codex.mjs)                                                          |
+| Token parsing from JSONL            | [src/codex.mjs](src/codex.mjs) — `parseTokens`                                          |
+| System prompt / citation format     | [src/prompt.mjs](src/prompt.mjs)                                                        |
+| User whitelist                      | [src/config.mjs](src/config.mjs) + `ALLOWED_USER_IDS` in `.env`                         |
+| Markdown → Telegram HTML conversion | [src/format.mjs](src/format.mjs) — `mdToTgHtml`, `chunkByLines`                         |
+| Small-talk replies (skip Codex)     | [src/triage.mjs](src/triage.mjs) — `MANUAL` and `DEEPPAVLOV`                            |
+| Atomic commits                      | [scripts/git/atomic-commit.mjs](scripts/git/atomic-commit.mjs)                          |
+| Linters over changed files          | [scripts/lint/](scripts/lint/)                                                          |
+| Safety hooks for the agent          | [scripts/claude-hooks/](scripts/claude-hooks/)                                          |
+| Plans + validator                   | [plans/](plans/) + [scripts/plans/validate-plans.mjs](scripts/plans/validate-plans.mjs) |
 
 ## Hard rules
 
@@ -92,13 +95,43 @@ codex-tg-bridge/
 8. **Tests without a framework.** These are `node --test`-compatible scripts on `node:test` /
    `node:assert`. Don't pull jest/vitest for a single file.
 
+## Технические планы
+
+Любая нетривиальная задача начинается с плана в [plans/](plans/). Правила — в
+[plans/README.md](plans/README.md). Кратко:
+
+- Один план = одно изменение. Файл: `plans/YYYY-MM-DD-kebab-name.md`.
+- Обязательны: H1-заголовок, фазы со статусом `[ ]`/`[x]`, секция `## Итог` в конце.
+- Без таймингов. Цель и DoD — да, расписание — нет.
+- Актуализируй план по ходу работы: отмечай выполненные фазы, обновляй итог.
+
+Скиллы для агента:
+
+- [.claude/skills/plan-creator/](.claude/skills/plan-creator/) — создать новый план по шаблону.
+- [.claude/skills/plan-validator/](.claude/skills/plan-validator/) — проверить план на соответствие
+  правилам.
+
+Валидатор: [scripts/plans/validate-plans.mjs](scripts/plans/validate-plans.mjs).
+
+```bash
+npm run check:plans          # проверить все планы
+npm run check:plans:staged   # проверить только застейдженные (то же делает pre-commit)
+node ./scripts/plans/validate-plans.mjs plans/2026-05-22-some-task.md  # один файл
+```
+
+PostToolUse-хук
+[scripts/claude-hooks/validate-plan-on-write.mjs](scripts/claude-hooks/validate-plan-on-write.mjs)
+автоматически валидирует план после каждой правки агентом. PreToolUse-хук
+[scripts/claude-hooks/validate-staged-plans.mjs](scripts/claude-hooks/validate-staged-plans.mjs)
+блокирует `git commit`, если в индексе есть невалидные планы.
+
 ## Lint, format, CI
 
 Before committing:
 
 ```bash
 npm run format        # prettier on changed files (git diff + untracked)
-npm run ci:check      # format:check + markdownlint + custom checks on changed files
+npm run ci:check      # format:check + markdownlint + custom checks + check:plans
 npm run format:all    # prettier on the whole repo
 npm run ci:check:all  # full check
 ```
@@ -146,6 +179,14 @@ In [scripts/claude-hooks/](scripts/claude-hooks/):
 - `block-push-to-main.mjs` — cuts off `git push … main|master`.
 - `block-unsafe-git-add.mjs` — cuts off `git add -A` / `git add .`.
 - `block-secret-write.mjs` — cuts off writes to `.env`, `.env.*`, other dotfiles with secrets.
+- `validate-plan-on-write.mjs` — PostToolUse: после правки `plans/YYYY-MM-DD-*.md` запускает
+  валидатор и блокирует следующий шаг, если план невалиден.
+- `validate-staged-plans.mjs` — PreToolUse на Bash: перед `git commit` проверяет застейдженные планы
+  и блокирует коммит на ошибках.
+- `play-sound.sh` — звуковые оповещения на события `Stop` (короткий звук завершения), `Notification`
+  и `PermissionRequest` (три звука / привлекающий внимание). Fallback: paplay → PowerShell (WSLg) →
+  терминальный bell. Громкость переопределяется через `CLAUDE_SOUND_VOLUME` (0..65536, по умолчанию
+  49152).
 
 ## When editing `prompt.mjs`
 
