@@ -1,0 +1,49 @@
+=== CASE: short ===
+{"type":"thread.started","thread_id":"019e4f79-40c5-7532-b201-e827cf401cf3"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Могу:\n\n- разбирать структуру этого репо и правила из `AGENTS.md`, `CLAUDE.md`, `ONTOLOGY.md`, `PLAN.md`;\n- искать требования по корпусу, сверять wiki-ссылки, фронтматтер и словари;\n- помогать добавлять/исправлять `sources/`, `topics/`, `crosswalks` без дублирования нормативного текста;\n- проверять соответствие ontology-правилам, особенно `type`, `body`, `applies_to`, `relation`;\n- готовить правки markdown/YAML и объяснять, что именно надо изменить;\n- запускать проверки, если среда позволяет.\n\nСейчас среда у меня read-only, поэтому могу читать и анализировать файлы, но не могу физически записывать изменения или делать коммиты, пока права не изменятся."}}
+{"type":"turn.completed","usage":{"input_tokens":18716,"cached_input_tokens":6528,"output_tokens":336,"reasoning_output_tokens":153}}
+
+=== CASE: long ===
+{"type":"thread.started","thread_id":"019e4f7b-8f9d-7042-84e3-ef42ff24e30b"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Читаю указанный topic напрямую, так как путь известен."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc \"sed -n '1,240p' topics/dau-gd.md\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc \"sed -n '1,240p' topics/dau-gd.md\"","aggregated_output":"---\ntype: topic\ntitle: \"ДАУ главного двигателя\"\n...","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"В файле нет секции `## Требования`; там дано краткое описание области ДАУ ГД и список источников. Сейчас уточню строки, чтобы привязать ответ к месту в файле."}}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"/bin/bash -lc \"nl -ba topics/dau-gd.md | sed -n '1,120p'\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"/bin/bash -lc \"nl -ba topics/dau-gd.md | sed -n '1,120p'\"","aggregated_output":"     1\t---\n     2\ttype: topic\n...","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"В [topics/dau-gd.md](/home/cejidb/cursor/marine-automation-requirements-graph/topics/dau-gd.md:18) указаны не детальные `R1/R2`, а основные рамки требований:\n\n- ДАУ ГД должно обеспечивать пуск, остановку, изменение частоты вращения и реверс главного двигателя с мостика или из ЦПУ без вмешательства персонала в МО.\n...\n\nФайл имеет `status: stub`, поэтому полноценного перечня требований в формате `## Требования` там пока нет."}}
+{"type":"turn.completed","usage":{"input_tokens":59330,"cached_input_tokens":44160,"output_tokens":1219,"reasoning_output_tokens":688}}
+
+=== ПРИМЕЧАНИЕ ===
+Версия codex-cli: 0.130.0
+Дата запуска: 2026-05-22
+GRAPH_REPO_PATH: /home/cejidb/cursor/marine-automation-requirements-graph
+
+Полный вывод длинного кейса (первый запрос, прерван по таймауту 120с) содержал 73 строки,
+37 событий item.completed и 33 item.started — всё command_execution. turn.completed не было
+получено из-за таймаута, но структура событий полностью ясна.
+
+Во втором запуске длинного кейса (таймаут 300с) turn.completed получен успешно.
+
+=== ВЫВОД: РЕАЛЬНЫЕ ТИПЫ СОБЫТИЙ codex-cli 0.130.0 ===
+
+Подтверждённые типы (оба кейса):
+  thread.started     — старт сессии
+  turn.started       — старт хода агента
+  item.started       — начало выполнения инструмента (item.type = "command_execution")
+  item.completed     — завершение: либо command_execution (tool), либо agent_message (текст)
+  turn.completed     — финал хода с usage
+
+НЕ НАЙДЕНО ни в одном кейсе:
+  response.output_text.delta
+  response.function_call_arguments.delta
+  response.output_item.added
+  agent.message.delta
+  text.delta
+  — никаких streaming-дельт текста!
+
+РЕЖИМ: только-активность
+  Tool-события: item.started + item.completed (item.type="command_execution") — ДА
+  Text-дельты: НЕТ (текст приходит целиком в item.completed с item.type="agent_message")
