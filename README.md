@@ -36,3 +36,8 @@ npm start
 
 - Node ≥ 20
 - `codex` CLI в PATH, авторизованный (`codex login`).
+
+## Технические планы
+
+Любое нетривиальное изменение начинается с плана в [plans/](plans/) — формат и правила в
+[plans/README.md](plans/README.md). Проверка: `npm run check:plans`.
