@@ -272,7 +272,7 @@ function buildMessage(def, files, statusMap) {
   ].filter(Boolean);
 
   const filesWord = pluralRu(n, "файл", "файла", "файлов");
-  const base = `${header}${sep}обновить ${n} ${filesWord} (${counters.join(" ")})`;
+  const base = `${header}${sep}обновить ${n} ${filesWord} [${counters.join(" ")}]`;
   if (n <= 3) return truncateMessage(`${base}: ${names.join(", ")}`);
   return truncateMessage(base);
 }
