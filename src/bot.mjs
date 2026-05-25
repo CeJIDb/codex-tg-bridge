@@ -391,8 +391,18 @@ async function sendAnswer(ctx, placeholder, text) {
   const linked = await tryLinkify(text);
   const html = mdToTgHtml(linked);
   const chunks = chunkByLines(html, TELEGRAM_LIMIT);
-  await safeEdit(ctx, placeholder, chunks[0], text);
-  const sentMsgIds = [placeholder.message_id];
+
+  // Финальный ответ должен прийти новым сообщением, чтобы Telegram отправил
+  // уведомление пользователю — edit плейсхолдера уведомление не триггерит.
+  try {
+    await ctx.api.deleteMessage(placeholder.chat.id, placeholder.message_id);
+  } catch (err) {
+    console.warn("Не смог удалить плейсхолдер:", err.description || err.message);
+  }
+
+  const sentMsgIds = [];
+  const first = await safeReply(ctx, chunks[0], text);
+  if (first?.message_id) sentMsgIds.push(first.message_id);
   for (let i = 1; i < chunks.length; i++) {
     const sent = await safeReply(ctx, chunks[i]);
     if (sent?.message_id) sentMsgIds.push(sent.message_id);
