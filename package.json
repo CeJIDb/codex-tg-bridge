@@ -4,6 +4,7 @@
   "description": "Telegram-бот «Лоцман» — мост между Telegram и Codex CLI поверх графа нормативной базы",
   "type": "module",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "start": "node src/index.mjs",
     "dev": "node --watch src/index.mjs",
