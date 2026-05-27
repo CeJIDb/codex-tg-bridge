@@ -128,7 +128,9 @@ export function urlForMarkdown(url) {
   return url.replace(/\(/g, "%28").replace(/\)/g, "%29");
 }
 
-// Превращает «Источники:» в конце ответа в гиперссылки.
+// Превращает «Источники:» в конце ответа в гиперссылки + линкует inline-цитаты
+// `[N, п. 6.3.5]` (и мульти-цитаты `[1, п. 7.1; 2, cl. 4.6.2]`) так, чтобы
+// кликабельным был только номер N, а метаданные оставались плоским текстом.
 // Ищем последнюю строку-заголовок «Источники», для каждой следующей строки
 // вида «[N] CODE ...» подставляем markdown-ссылку, если CODE есть в byCode.
 export function linkifyCitations(md, byCode) {
@@ -147,15 +149,22 @@ export function linkifyCitations(md, byCode) {
   if (headerIdx === -1) return md;
 
   const codes = [...byCode.keys()].sort((a, b) => b.length - a.length);
-  const citationRe = /^(\s*)(\[\d+\])(\s+)(.*)$/;
+  const citationRe = /^(\s*)(\[(\d+)\])(\s+)(.*)$/;
+
+  // N → url для второго прохода (линковка inline-цитат до заголовка «Источники:»).
+  const nToUrl = new Map();
 
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const m = lines[i].match(citationRe);
     if (!m) continue;
-    const [, indent, num, sp, rest] = m;
+    const [, indent, num, n, sp, rest] = m;
 
-    // Пропускаем уже оформленную ссылку
-    if (/^\[[^\]]+\]\([^)]+\)/.test(rest)) continue;
+    // Уже оформленная ссылка — URL берём из неё для inline-прохода.
+    const already = rest.match(/^\[[^\]]+\]\(([^)]+)\)/);
+    if (already) {
+      nToUrl.set(n, already[1]);
+      continue;
+    }
 
     // Допускаем ведущий **жирный** и снимаем его для матчинга, потом возвращаем
     const boldMatch = rest.match(/^\*\*([^*\n]+?)\*\*(.*)$/);
@@ -172,9 +181,39 @@ export function linkifyCitations(md, byCode) {
     if (!matched) continue;
 
     const url = urlForMarkdown(byCode.get(matched));
+    if (!url) continue;
+    nToUrl.set(n, url);
     const after = target.slice(matched.length);
     const linkLabel = boldMatch ? `**${matched}**` : matched;
     lines[i] = `${indent}${num}${sp}[${linkLabel}](${url})${after}${tail}`;
+  }
+
+  // Второй проход: inline `[N, …]` до заголовка «Источники:» —
+  //  (а) ведущий N → markdown-ссылка (если URL известен);
+  //  (б) защищаем имена файлов `name.ext` от Telegram auto-link, вставляя
+  //      U+2060 WORD JOINER перед точкой расширения. `.md`, `.pdf`, `.io` —
+  //      валидные TLD, Telegram подсвечивает их как ссылку, даже если это
+  //      просто имя файла. Word joiner ломает детектор, текст визуально
+  //      не меняется. Порядок важен: fileExt → потом N-link, иначе пробьём
+  //      URL внутри `[N](url)`.
+  // Поддерживаем мульти-цитаты `[1, …; 2, …]`.
+  const inlineCiteRe = /\[(\d[^\[\]\n]*)\](?!\()/g;
+  // tgAutoLinkRe ловит точку, по обе стороны которой ASCII-символ (буква/цифра).
+  // Покрывает имена файлов и номерные ссылки (`6.3.5`, `1.2.3.4` → IPv4-детектор).
+  // Кириллические сокращения `п.`, `гл.`, `разд.`, `ст.` Telegram и так не цепляет.
+  const tgAutoLinkRe = /(?<=[a-zA-Z0-9_-])\.(?=[a-zA-Z\d])/g;
+  const WORD_JOINER = "\u2060";
+  for (let i = 0; i < headerIdx; i++) {
+    lines[i] = lines[i].replace(inlineCiteRe, (whole, inner) => {
+      let newInner = inner.replace(tgAutoLinkRe, `${WORD_JOINER}.`);
+      if (nToUrl.size > 0) {
+        newInner = newInner.replace(/(^|;\s*)(\d+)/g, (_, sep, n) => {
+          const url = nToUrl.get(n);
+          return url ? `${sep}[${n}](${url})` : `${sep}${n}`;
+        });
+      }
+      return newInner === inner ? whole : `[${newInner}]`;
+    });
   }
 
   return lines.join("\n");
