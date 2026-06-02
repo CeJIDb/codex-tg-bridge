@@ -11,7 +11,7 @@
  *   node scripts/git/atomic-commit.mjs --verbose        # показывать вывод git commit
  */
 import { execFileSync, execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
@@ -367,6 +367,26 @@ const BUCKET_ORDER = [
   "misc",
 ];
 
+/**
+ * Ближайший предок пути, ставший symlink (директорию заменили ссылкой).
+ * git не пускает pathspec «сквозь» symlink (fatal: beyond a symbolic link),
+ * поэтому такой путь надо стейджить через сам symlink — он каскадно подтянет
+ * удаление файлов под ним (D/F-резолв git). Возвращает rel-путь предка или null.
+ */
+function nearestSymlinkAncestor(relPath) {
+  const parts = relPath.split("/").filter(Boolean);
+  let acc = "";
+  for (let k = 0; k < parts.length - 1; k++) {
+    acc = acc ? `${acc}/${parts[k]}` : parts[k];
+    try {
+      if (lstatSync(acc).isSymbolicLink()) return acc;
+    } catch {
+      /* компонента нет в рабочем дереве — не symlink-проблема */
+    }
+  }
+  return null;
+}
+
 function classifyFile(p) {
   for (const def of BUCKET_DEFS) {
     if (def.test(p)) return def;
@@ -463,7 +483,13 @@ async function main() {
     const cachedStaged = new Set(
       gitStdoutRaw(["diff", "--cached", "--name-only", "-z"]).split("\0").filter(Boolean),
     );
-    const toAdd = fs.filter((f) => !(cachedStaged.has(f) && !existsSync(f)));
+    const toAddSet = new Set();
+    for (const f of fs) {
+      if (cachedStaged.has(f) && !existsSync(f)) continue;
+      // Путь под symlink-предком стейджим через сам symlink (иначе fatal: beyond a symbolic link).
+      toAddSet.add(nearestSymlinkAncestor(f) ?? f);
+    }
+    const toAdd = [...toAddSet];
     if (toAdd.length > 0) gitRun(["add", "-A", "--", ...toAdd]);
     gitRun(["commit", "-m", msg]);
     console.log(`Создан: ${msg}`);

@@ -13,6 +13,16 @@ import path from "node:path";
 
 export const ROOT = process.cwd();
 
+/**
+ * Пути, которые линтеры/форматтеры игнорируют: настройки и скиллы агента —
+ * внешние, не управляются этим репо. Префиксы относительно корня.
+ */
+const IGNORED_PREFIXES = [".claude/", ".agents/"];
+
+function isIgnored(rel) {
+  return IGNORED_PREFIXES.some((p) => rel === p.replace(/\/$/, "") || rel.startsWith(p));
+}
+
 /** Возвращает дедуплицированный список относительных путей (от корня репо). */
 export function getChangedRelPaths(root = ROOT) {
   const run = (cmd) => {
@@ -32,7 +42,7 @@ export function getChangedRelPaths(root = ROOT) {
     ...run("git ls-files --others --exclude-standard"),
   ]);
 
-  return [...files];
+  return [...files].filter((f) => !isIgnored(f));
 }
 
 /** Возвращает абсолютные пути всех изменённых файлов. */
