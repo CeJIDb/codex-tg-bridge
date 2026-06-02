@@ -54,6 +54,7 @@
     "node_modules/**",
     ".git/**",
     ".claude/**",
+    ".agents/**",
     // GitHub-шаблоны — особый формат, не документация для чтения.
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/ISSUE_TEMPLATE/**",
