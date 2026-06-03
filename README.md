@@ -1,4 +1,4 @@
-# codex-tg-bridge — Telegram-бот «Лоцман»
+# codex-tg-bridge — Telegram-бот для графовой базы знаний
 
 **Languages:** **Русский** · [English](README.en.md)
 
