@@ -1,4 +1,4 @@
-# codex-tg-bridge — Telegram bot "Lotsman"
+# codex-tg-bridge — Telegram bot for a graph knowledge base
 
 **Languages:** [Русский](README.md) · **English**
 
